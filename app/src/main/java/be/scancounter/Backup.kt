@@ -41,9 +41,12 @@ object Backup {
     }
 
     /** Sauvegardes et copies automatiques gardees dans l'appli, la plus recente d'abord. */
-    fun stored(ctx: Context): List<File> =
-        (userDir(ctx).listFiles().orEmpty() + File(ctx.filesDir, "backups").listFiles().orEmpty())
-            .filter { it.isFile && it.name.endsWith(".zip") }.sortedByDescending { it.lastModified() }
+    fun stored(ctx: Context): List<File> {
+        val all = mutableListOf<File>()
+        userDir(ctx).listFiles()?.let { all.addAll(it) }
+        File(ctx.filesDir, "backups").listFiles()?.let { all.addAll(it) }
+        return all.filter { f -> f.isFile && f.name.endsWith(".zip") }.sortedByDescending { f -> f.lastModified() }
+    }
 
     /** Contenu lu d'un zip, en memoire (pour le resume avant remplacement). */
     class Content(val json: String, val photos: Map<String, ByteArray>)
