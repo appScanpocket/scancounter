@@ -9,15 +9,16 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /** Resultat de la lecture d'un fichier d'import. cols = indices des details dont la colonne existe. */
-class ImportData(val lines: MutableList<Line>, val skipped: List<Skipped>, val cols: Set<Int>) {
-    val count get() = lines.size
+class ImportData(val rows: MutableList<Row>, val skipped: List<Skipped>, val cols: Set<Int>) {
+    val count get() = rows.size
+    /** Photos recues avec le fichier (zip) : nom de fichier (voir Photos.file) -> octets jpg. */
+    var photos: Map<String, ByteArray> = emptyMap()
 }
 class Skipped(val row: Int, val why: String)
 
 /** Export / import .xlsx et .csv : port de xlsx.js (java.util.zip remplace le zip fait main). */
 object Xlsx {
     const val MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    val HEADERS = listOf("code", "ref_fournisseur", "nom", "affectation", "marque", "emplacement", "quantite", "heure")
 
     // ---------- ecriture ----------
     private fun esc(s: String): String =
@@ -31,21 +32,21 @@ object Xlsx {
         return s
     }
 
-    fun build(lines: List<Line>): ByteArray {
+    /** Tableau a plat : en-tetes puis lignes de texte ; les colonnes de numCols sont ecrites comme nombres (cellule vide = vide). */
+    fun build(headers: List<String>, rowsIn: List<List<String>>, numCols: Set<Int>): ByteArray {
         val rows = StringBuilder("<row r=\"1\">")
-        HEADERS.forEachIndexed { i, h -> rows.append("<c r=\"${colName(i)}1\" t=\"inlineStr\" s=\"1\"><is><t>$h</t></is></c>") }
+        headers.forEachIndexed { i, h -> rows.append("<c r=\"${colName(i)}1\" t=\"inlineStr\" s=\"1\"><is><t>$h</t></is></c>") }
         rows.append("</row>")
-        lines.forEachIndexed { idx, l ->
+        rowsIn.forEachIndexed { idx, cells ->
             val r = idx + 2
             rows.append("<row r=\"$r\">")
-            listOf(l.code, l.d.ref, l.d.nom, l.d.affectation, l.d.marque, l.d.emplacement).forEachIndexed { i, v ->
-                rows.append("<c r=\"${colName(i)}$r\" t=\"inlineStr\" s=\"2\"><is><t xml:space=\"preserve\">${esc(v)}</t></is></c>")
+            cells.forEachIndexed { i, v ->
+                if (i in numCols) { if (v.isNotEmpty()) rows.append("<c r=\"${colName(i)}$r\"><v>$v</v></c>") }
+                else rows.append("<c r=\"${colName(i)}$r\" t=\"inlineStr\" s=\"2\"><is><t xml:space=\"preserve\">${esc(v)}</t></is></c>")
             }
-            rows.append("<c r=\"G$r\"><v>${Logic.fmtQtyDot(l.qty)}</v></c>")
-            rows.append("<c r=\"H$r\" t=\"inlineStr\" s=\"2\"><is><t xml:space=\"preserve\">${esc(l.time)}</t></is></c>")
             rows.append("</row>")
         }
-        val last = "H" + (lines.size + 1)
+        val last = colName(headers.size - 1) + (rowsIn.size + 1)
         val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
         val files = listOf(
             "[Content_Types].xml" to xml + """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>""",
@@ -53,7 +54,7 @@ object Xlsx {
             "xl/workbook.xml" to xml + """<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Scancounter" sheetId="1" r:id="rId1"/></sheets></workbook>""",
             "xl/_rels/workbook.xml.rels" to xml + """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""",
             "xl/styles.xml" to xml + """<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="49" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>""",
-            "xl/worksheets/sheet1.xml" to xml + """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:$last"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="2" width="18" customWidth="1"/><col min="3" max="3" width="34" customWidth="1"/><col min="4" max="6" width="16" customWidth="1"/><col min="7" max="7" width="10" customWidth="1"/><col min="8" max="8" width="20" customWidth="1"/></cols><sheetData>$rows</sheetData></worksheet>"""
+            "xl/worksheets/sheet1.xml" to xml + """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:$last"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="2" width="18" customWidth="1"/><col min="3" max="3" width="34" customWidth="1"/><col min="4" max="7" width="16" customWidth="1"/><col min="8" max="12" width="14" customWidth="1"/></cols><sheetData>$rows</sheetData></worksheet>"""
         )
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zip ->
@@ -177,13 +178,14 @@ object Xlsx {
         "nom" to listOf("nom", "designation", "libelle"),
         "affectation" to listOf("affectation"),
         "marque" to listOf("marque"),
+        "magasin" to listOf("magasin", "mag", "depot"),
         "emplacement" to listOf("emplacement", "empl"),
         "qty" to listOf("quantite", "qte", "qty", "quantitecomptee"),
         "time" to listOf("heure", "date", "horodatage", "dateheure")
     )
 
     /** Lance IllegalArgumentException avec un message clair si le fichier n'est pas exploitable. */
-    fun rowsToLines(rows: List<List<String>>, now: String): ImportData {
+    fun rowsToRows(rows: List<List<String>>, now: String): ImportData {
         var hr = -1
         for (i in 0 until minOf(rows.size, 10)) {
             if (rows[i].any { fold(it) in ALIAS.getValue("code") }) { hr = i; break }
@@ -195,19 +197,47 @@ object Xlsx {
             for ((k, names) in ALIAS) if (k !in idx && f in names) idx[k] = ci
         }
         if ("qty" !in idx) throw IllegalArgumentException("Colonne « quantité » introuvable dans les en-têtes.")
-        val lines = mutableListOf<Line>()
+        // une ligne par (code, magasin, emplacement) : les quantites d'une meme cle s'additionnent
+        val merged = linkedMapOf<String, Row>()
         val skipped = mutableListOf<Skipped>()
         for (r in hr + 1 until rows.size) {
             val row = rows[r]
             if (row.none { it.trim().isNotEmpty() }) continue
             fun get(k: String): String = idx[k]?.let { row.getOrNull(it) } ?: ""
-            val det = Details(get("ref"), get("nom"), get("affectation"), get("marque"), get("emplacement"))
+            val code = Logic.normCode(get("code"))
+            val q = Logic.normQty(get("qty"))
+            if (code.isEmpty()) { skipped.add(Skipped(r + 1, "Code vide")); continue }
+            if (q == null) { skipped.add(Skipped(r + 1, "Quantité invalide")); continue }
+            val mag = Logic.normField(get("magasin")); val emp = Logic.normField(get("emplacement"))
             val t = get("time").trim().ifEmpty { now }
-            val res = Logic.addLine(lines, get("code"), get("qty"), "add", t, det)
-            if (!res.ok) skipped.add(Skipped(r + 1, res.error))
+            val key = code + "" + mag.lowercase() + "" + emp.lowercase()
+            val prev = merged[key]
+            val nr = Row(code, Logic.normField(get("ref")), Logic.normField(get("nom")), Logic.normField(get("affectation")), Logic.normField(get("marque")), mag, emp, q, t)
+            merged[key] = if (prev == null) nr else Row(code,
+                nr.ref.ifEmpty { prev.ref }, nr.nom.ifEmpty { prev.nom }, nr.affectation.ifEmpty { prev.affectation }, nr.marque.ifEmpty { prev.marque },
+                mag, emp, Logic.addQty(prev.qty, q), t)
         }
-        val names = listOf("ref", "nom", "affectation", "marque", "emplacement")
+        val names = listOf("ref", "nom", "affectation", "marque")
         val cols = names.indices.filter { names[it] in idx }.toSet()
-        return ImportData(lines, skipped, cols)
+        return ImportData(merged.values.toMutableList(), skipped, cols)
+    }
+
+    /** Export du stock : une ligne par produit / magasin / emplacement. */
+    fun buildStock(rows: List<Row>): ByteArray = build(Logic.STOCK_HEADERS,
+        rows.map { listOf(it.code, it.ref, it.nom, it.affectation, it.marque, it.magasin, it.emplacement, Logic.fmtQtyDot(it.qty), it.time) },
+        setOf(7))
+
+    val INVENTORY_HEADERS = listOf("code", "ref_fournisseur", "nom", "affectation", "marque", "magasin", "emplacement",
+        "quantite_attendue", "quantite_comptee", "ecart", "heure_comptage")
+
+    /** Export d'un inventaire : attendu, compte et ecart par ligne du perimetre (compte et ecart vides si non compte). */
+    fun buildInventory(repo: Repo, inv: Inventory): ByteArray {
+        val rows = repo.scope(inv).mapNotNull { l ->
+            val p = repo.productById(l.productId) ?: return@mapNotNull null
+            val c = repo.countOf(inv, l)
+            listOf(p.code, p.ref, p.nom, p.affectation, p.marque, l.magasin, l.emplacement, Logic.fmtQtyDot(l.qty),
+                c?.let { Logic.fmtQtyDot(it.qty) } ?: "", c?.let { Logic.fmtQtyDot(it.qty - l.qty) } ?: "", c?.modified ?: "")
+        }
+        return build(INVENTORY_HEADERS, rows, setOf(7, 8, 9))
     }
 }

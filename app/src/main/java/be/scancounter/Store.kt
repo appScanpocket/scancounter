@@ -4,39 +4,18 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Stockage local (SharedPreferences) : lignes, dernier export, journal des 10 dernieres actions. */
+/** Petits reglages locaux (SharedPreferences) : dernier export, inventaire en cours de comptage, journal des 10 dernieres actions. */
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("scancounter", Context.MODE_PRIVATE)
-
-    fun loadLines(): MutableList<Line> {
-        val out = mutableListOf<Line>()
-        try {
-            val arr = JSONArray(prefs.getString(KEY_LINES, "[]") ?: "[]")
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(Line(
-                    o.optString("code"),
-                    Details(o.optString("ref"), o.optString("nom"), o.optString("affectation"), o.optString("marque"), o.optString("emplacement")).clean(),
-                    o.optDouble("qty", 0.0),
-                    o.optString("time")
-                ))
-            }
-        } catch (_: Exception) { }
-        return out
-    }
-
-    fun saveLines(lines: List<Line>) {
-        val arr = JSONArray()
-        for (l in lines) arr.put(JSONObject().apply {
-            put("code", l.code); put("ref", l.d.ref); put("nom", l.d.nom); put("affectation", l.d.affectation)
-            put("marque", l.d.marque); put("emplacement", l.d.emplacement); put("qty", l.qty); put("time", l.time)
-        })
-        prefs.edit().putString(KEY_LINES, arr.toString()).apply()
-    }
 
     var lastExport: String
         get() = prefs.getString(KEY_EXPORT, "") ?: ""
         set(v) { prefs.edit().putString(KEY_EXPORT, v).apply() }
+
+    /** Id de l'inventaire en cours de comptage (vide = aucun). */
+    var currentInv: String
+        get() = prefs.getString(KEY_INV, "") ?: ""
+        set(v) { prefs.edit().putString(KEY_INV, v).apply() }
 
     fun journal(): List<JournalEntry> {
         val out = mutableListOf<JournalEntry>()
@@ -58,8 +37,8 @@ class Store(context: Context) {
     }
 
     private companion object {
-        const val KEY_LINES = "lignes"
         const val KEY_EXPORT = "dernier_export"
+        const val KEY_INV = "inventaire_en_cours"
         const val KEY_LOG = "journal"
     }
 }

@@ -30,6 +30,8 @@
                 <data android:mimeType="text/comma-separated-values"/>
                 <data android:mimeType="application/csv"/>
                 <data android:mimeType="application/octet-stream"/>
+                <data android:mimeType="application/zip"/>
+                <data android:mimeType="application/x-zip-compressed"/>
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
@@ -38,6 +40,8 @@
                 <data android:mimeType="text/csv"/>
                 <data android:mimeType="text/comma-separated-values"/>
                 <data android:mimeType="application/csv"/>
+                <data android:mimeType="application/zip"/>
+                <data android:mimeType="application/x-zip-compressed"/>
             </intent-filter>
         </activity>
         <provider

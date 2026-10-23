@@ -7,33 +7,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Details d'un article (tout sauf code, quantite et heure). Ordre = Logic.FIELD_TITLES. */
-data class Details(
-    val ref: String = "",
-    val nom: String = "",
-    val affectation: String = "",
-    val marque: String = "",
-    val emplacement: String = ""
-) {
-    operator fun get(i: Int): String = when (i) { 0 -> ref; 1 -> nom; 2 -> affectation; 3 -> marque; else -> emplacement }
-    fun with(i: Int, v: String): Details = when (i) {
-        0 -> copy(ref = v); 1 -> copy(nom = v); 2 -> copy(affectation = v); 3 -> copy(marque = v); else -> copy(emplacement = v)
-    }
-    fun any(): Boolean = (0..4).any { this[it].isNotEmpty() }
-    fun clean(): Details = Details(Logic.normField(ref), Logic.normField(nom), Logic.normField(affectation), Logic.normField(marque), Logic.normField(emplacement))
-}
+/** Une carte de l'ecran Articles : ligne de stock + fiche produit. */
+class Card(val l: StockLine, val p: Product)
 
-class Line(var code: String, var d: Details, var qty: Double, var time: String) {
-    fun copyOf() = Line(code, d, qty, time)
-}
-
-data class AddResult(
-    val ok: Boolean,
-    val action: String = "",
-    val error: String = "",
-    val exists: Boolean = false,
-    val index: Int = -1,
-    val current: Double = 0.0
+/** Ligne a plat pour l'export / l'import (un produit a un magasin et un emplacement). */
+class Row(
+    val code: String, val ref: String, val nom: String, val affectation: String, val marque: String,
+    val magasin: String, val emplacement: String, val qty: Double, val time: String
 )
 
 data class MergeCounts(var created: Int = 0, var updated: Int = 0, var kept: Int = 0, var infoChanged: Int = 0, var cleared: Int = 0)
@@ -46,9 +26,9 @@ data class EtiquetteApply(val fields: Map<String, String>, val missing: List<Str
 
 data class JournalEntry(val t: String, val action: String, val result: String)
 
-/** Logique pure (sans ecran) : port de logic.js de la PWA Scancounter v0.18. */
+/** Logique pure (sans ecran) : port de logic.js de la PWA Scancounter, adapte au modele produit / stock / inventaire. */
 object Logic {
-    val FIELD_TITLES = listOf("Ref. fournisseur", "Nom", "Affectation", "Marque", "Emplacement")
+    val FIELD_TITLES = listOf("Ref. fournisseur", "Nom", "Affectation", "Marque")
 
     fun normCode(s: String?): String = (s ?: "").replace(Regex("[\\r\\n\\t;]+"), " ").trim()
     fun normField(s: String?): String = (s ?: "").replace(Regex("[\\r\\n\\t]+"), " ").trim()
@@ -63,6 +43,8 @@ object Logic {
         return round3(n)
     }
 
+    fun addQty(a: Double, b: Double): Double = round3(a + b)
+
     fun fmtQty(q: Double): String {
         if (q == Math.floor(q) && Math.abs(q) < 1e12) return q.toLong().toString()
         return String.format(Locale.ROOT, "%.3f", q).trimEnd('0').trimEnd('.').replace('.', ',')
@@ -70,63 +52,10 @@ object Logic {
     /** Pour la cellule Excel : point decimal. */
     fun fmtQtyDot(q: Double): String = fmtQty(q).replace(',', '.')
 
-    fun findIndex(lines: List<Line>, code: String): Int {
-        for (i in lines.indices) if (lines[i].code == code) return i
-        return -1
-    }
-
-    /** Memoire par code : details de la ligne portant ce code (ou null). */
-    fun prefill(lines: List<Line>, code: String): Details? {
-        val i = findIndex(lines, normCode(code))
-        return if (i < 0) null else lines[i].d.clean()
-    }
-
-    /** mode : "new", "add" (additionner) ou "replace" (remplacer). */
-    fun addLine(lines: MutableList<Line>, codeIn: String, qtyIn: String, mode: String, now: String, details: Details?): AddResult {
-        val code = normCode(codeIn)
-        val q = normQty(qtyIn)
-        if (code.isEmpty()) return AddResult(false, error = "Code vide")
-        if (q == null) return AddResult(false, error = "Quantité invalide")
-        val clean = (details ?: Details()).clean()
-        val i = findIndex(lines, code)
-        if (i >= 0) {
-            if (mode == "add" || mode == "replace") {
-                val ln = lines[i]
-                var nd = ln.d
-                for (f in 0..4) if (clean[f].isNotEmpty()) nd = nd.with(f, clean[f])
-                ln.d = nd
-                ln.qty = if (mode == "add") round3(ln.qty + q) else q
-                ln.time = now
-                return AddResult(true, action = if (mode == "add") "added" else "replaced")
-            }
-            return AddResult(false, exists = true, index = i, current = lines[i].qty)
-        }
-        lines.add(Line(code, clean, q, now))
-        return AddResult(true, action = "created")
-    }
-
-    fun updateLine(lines: MutableList<Line>, index: Int, codeIn: String, qtyIn: String, now: String, details: Details?): AddResult {
-        val code = normCode(codeIn)
-        val q = normQty(qtyIn)
-        if (index !in lines.indices) return AddResult(false, error = "Ligne introuvable")
-        if (code.isEmpty()) return AddResult(false, error = "Code vide")
-        if (q == null) return AddResult(false, error = "Quantité invalide")
-        val j = findIndex(lines, code)
-        if (j >= 0 && j != index) return AddResult(false, error = "Ce code existe déjà sur une autre ligne")
-        lines[index] = Line(code, (details ?: Details()).clean(), q, now)
-        return AddResult(true)
-    }
-
-    fun total(lines: List<Line>): Double = round3(lines.sumOf { it.qty })
-
-    fun resetQuantities(lines: List<Line>): Int {
-        var n = 0
-        lines.forEach { if (it.qty != 0.0) n++; it.qty = 0.0 }
-        return n
-    }
+    fun total(lines: List<StockLine>): Double = round3(lines.sumOf { it.qty })
 
     // ---- CSV : memes colonnes que l'Excel, separateur point-virgule, BOM UTF-8 ----
-    private val CSV_HEADERS = listOf("code", "ref_fournisseur", "nom", "affectation", "marque", "emplacement", "quantite", "heure")
+    val STOCK_HEADERS = listOf("code", "ref_fournisseur", "nom", "affectation", "marque", "magasin", "emplacement", "quantite", "heure")
     private val reCsvSpecial = Regex("[;\"\\r\\n]")
     private val reCsvLine = Regex("[;\\r\\n]")
     private val reDigits = Regex("^[0-9]+$")
@@ -151,11 +80,14 @@ object Logic {
         return if (reCsvLine.containsMatchIn(s)) "\"" + f.replace("\"", "\"\"") + "\"" else f
     }
 
-    fun toCsv(lines: List<Line>): String {
-        val out = StringBuilder("\uFEFF").append(CSV_HEADERS.joinToString(";")).append("\r\n")
-        for (l in lines) {
-            val cols = listOf(l.code, l.d.ref, l.d.nom, l.d.affectation, l.d.marque, l.d.emplacement).map { csvTextField(it) } +
-                listOf(fmtQty(l.qty), csvField(l.time))
+    fun toRows(cards: List<Card>): List<Row> =
+        cards.map { Row(it.p.code, it.p.ref, it.p.nom, it.p.affectation, it.p.marque, it.l.magasin, it.l.emplacement, it.l.qty, it.l.modified) }
+
+    fun toCsv(rows: List<Row>): String {
+        val out = StringBuilder("\uFEFF").append(STOCK_HEADERS.joinToString(";")).append("\r\n")
+        for (r in rows) {
+            val cols = listOf(r.code, r.ref, r.nom, r.affectation, r.marque, r.magasin, r.emplacement).map { csvTextField(it) } +
+                listOf(fmtQty(r.qty), csvField(r.time))
             out.append(cols.joinToString(";")).append("\r\n")
         }
         return out.toString()
@@ -198,34 +130,43 @@ object Logic {
     }
 
     /**
-     * Import « Ajouter a la liste » (modifie lines).
-     * update : la quantite du fichier remplace l'actuelle (articles presents a quantite > 0).
+     * Import (modifie products et lines ; passer des copies pour un essai a blanc).
+     * qtyMode (lignes presentes a quantite > 0) : "keep" garde l'actuelle, "replace" prend celle du fichier, "add" additionne les deux.
      * infoMode : "complete" (seuls les details vides sont completes) ou "replace" (aligne sur le fichier, une cellule vide efface).
-     * cols : indices des details dont la colonne existe dans le fichier (colonne absente != cellule vide).
+     * cols : indices (0 ref, 1 nom, 2 affectation, 3 marque) dont la colonne existe dans le fichier (colonne absente != cellule vide).
      */
-    fun mergeImport(lines: MutableList<Line>, imported: List<Line>, update: Boolean, infoMode: String, cols: Set<Int>?): MergeCounts {
+    fun mergeImport(products: MutableList<Product>, lines: MutableList<StockLine>, rows: List<Row>, qtyMode: String, infoMode: String, cols: Set<Int>?): MergeCounts {
         val res = MergeCounts()
-        val present = cols ?: setOf(0, 1, 2, 3, 4)
-        for (l in imported) {
-            val code = normCode(l.code)
-            val d = l.d.clean()
-            val i = findIndex(lines, code)
-            if (i < 0) { lines.add(Line(code, d, l.qty, l.time)); res.created++; continue }
-            val cur = lines[i]
-            var changed = false
-            for (f in 0..4) {
-                val v = d[f]
-                if (infoMode == "replace") {
-                    if (f !in present) continue
-                    if (v != cur.d[f]) { if (v.isEmpty()) res.cleared++; cur.d = cur.d.with(f, v); changed = true }
-                } else {
-                    if (v.isEmpty()) continue
-                    if (cur.d[f].isEmpty()) { cur.d = cur.d.with(f, v); changed = true }
+        val present = cols ?: setOf(0, 1, 2, 3)
+        val byCode = HashMap<String, Product>().apply { products.forEach { p -> put(p.code, p); p.alts.forEach { a -> put(a, p) } } }
+        for (r in rows) {
+            val code = normCode(r.code)
+            val mag = normField(r.magasin); val emp = normField(r.emplacement)
+            val incoming = listOf(normField(r.ref), normField(r.nom), normField(r.affectation), normField(r.marque))
+            var p = byCode[code]
+            if (p == null) {
+                p = Product(newId(), code, incoming[0], incoming[1], incoming[2], incoming[3], r.time)
+                products.add(p); byCode[code] = p
+            } else {
+                val cur = listOf(p.ref, p.nom, p.affectation, p.marque).toMutableList()
+                var changed = false
+                for (f in 0..3) {
+                    val v = incoming[f]
+                    if (infoMode == "replace") {
+                        if (f !in present) continue
+                        if (v != cur[f]) { if (v.isEmpty()) res.cleared++; cur[f] = v; changed = true }
+                    } else if (v.isNotEmpty() && cur[f].isEmpty()) { cur[f] = v; changed = true }
+                }
+                if (changed) {
+                    p.ref = cur[0]; p.nom = cur[1]; p.affectation = cur[2]; p.marque = cur[3]; p.modified = r.time
+                    res.infoChanged++
                 }
             }
-            if (changed) res.infoChanged++
-            if (cur.qty == 0.0) { cur.qty = l.qty; cur.time = l.time; res.created++ }
-            else if (update) { cur.qty = l.qty; cur.time = l.time; res.updated++ }
+            val line = lines.firstOrNull { it.productId == p.id && it.magasin.equals(mag, true) && it.emplacement.equals(emp, true) }
+            if (line == null) { lines.add(StockLine(newId(), p.id, mag, emp, r.qty, r.time)); res.created++; continue }
+            if (line.qty == 0.0) { line.qty = r.qty; line.modified = r.time; res.created++ }
+            else if (qtyMode == "replace") { line.qty = r.qty; line.modified = r.time; res.updated++ }
+            else if (qtyMode == "add") { line.qty += r.qty; line.modified = r.time; res.updated++ }
             else res.kept++
         }
         return res
@@ -235,12 +176,29 @@ object Logic {
     fun foldText(s: String?): String =
         Normalizer.normalize((s ?: "").lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
 
-    private fun searchText(l: Line): String = foldText(listOf(l.code, l.d.ref, l.d.nom, l.d.affectation, l.d.marque, l.d.emplacement).joinToString(" "))
-    fun buildSearchIndex(lines: List<Line>): List<String> = lines.map { searchText(it) }
+    /** Cle de controle EAN-13 d'un corps de 12 chiffres. */
+    private fun eanCle(c: String): String = ((10 - c.mapIndexed { i, ch -> (ch - '0') * (if (i % 2 == 0) 1 else 3) }.sum() % 10) % 10).toString()
+
+    /** Prochain code interne libre : 200 + 9 chiffres + cle de controle (known = tous les codes deja utilises). */
+    fun nextCode200(known: Collection<String>): String {
+        val taken = known.toHashSet()
+        var seq = 0
+        taken.forEach { if (Regex("^200\\d{10}$").matches(it)) seq = maxOf(seq, it.substring(3, 12).toInt()) }
+        while (true) {
+            seq++
+            val body = "200" + seq.toString().padStart(9, '0')
+            val code = body + eanCle(body)
+            if (code !in taken) return code
+        }
+    }
+
+    private fun searchText(c: Card): String =
+        foldText((listOf(c.p.code) + c.p.alts + listOf(c.p.ref, c.p.nom, c.p.affectation, c.p.marque, c.l.magasin, c.l.emplacement)).joinToString(" "))
+    fun buildSearchIndex(cards: List<Card>): List<String> = cards.map { searchText(it) }
     fun searchTokens(q: String): List<String> = foldText(q).split(Regex("\\s+")).filter { it.isNotEmpty() }
 
-    /** Indices des lignes contenant TOUS les mots de q, parcourues dans l'ordre order. */
-    fun searchLines(lines: List<Line>, q: String, index: List<String>, order: List<Int>): List<Int> {
+    /** Indices des cartes contenant TOUS les mots de q, parcourues dans l'ordre order. */
+    fun searchCards(q: String, index: List<String>, order: List<Int>): List<Int> {
         val tok = searchTokens(q)
         val out = ArrayList<Int>()
         for (i in order) {
@@ -254,8 +212,11 @@ object Logic {
     }
 
     // ---- Tri multi-criteres ----
-    val SORT_ORDER = listOf("date", "code", "qty", "nom", "marque", "emplacement")
-    val SORT_LABELS = mapOf("date" to "Date", "code" to "Code", "qty" to "Quantité", "nom" to "Nom", "marque" to "Marque", "emplacement" to "Emplacement")
+    val SORT_ORDER = listOf("date", "nom", "code", "emplacement", "qty", "marque", "magasin")
+    val SORT_LABELS = mapOf(
+        "date" to "Derniers modifiés", "nom" to "Nom", "code" to "Code", "emplacement" to "Emplacement",
+        "qty" to "Quantité", "marque" to "Marque", "magasin" to "Magasin"
+    )
     private val collator: Collator = Collator.getInstance(Locale.FRENCH).apply { strength = Collator.PRIMARY }
     private val reTokens = Regex("\\d+|\\D+")
 
@@ -270,31 +231,33 @@ object Logic {
         return ta.size.compareTo(tb.size)
     }
 
-    private fun cmpKey(k: String, x: Line, y: Line): Int = when (k) {
-        "date" -> x.time.compareTo(y.time)
-        "qty" -> x.qty.compareTo(y.qty)
-        "code" -> naturalCmp(x.code, y.code)
-        "nom" -> naturalCmp(x.d.nom, y.d.nom)
-        "marque" -> naturalCmp(x.d.marque, y.d.marque)
-        "emplacement" -> naturalCmp(x.d.emplacement, y.d.emplacement)
+    private fun cmpKey(k: String, x: Card, y: Card): Int = when (k) {
+        "date" -> x.l.modified.compareTo(y.l.modified)
+        "qty" -> x.l.qty.compareTo(y.l.qty)
+        "code" -> naturalCmp(x.p.code, y.p.code)
+        "nom" -> naturalCmp(x.p.nom, y.p.nom)
+        "marque" -> naturalCmp(x.p.marque, y.p.marque)
+        "magasin" -> naturalCmp(x.l.magasin, y.l.magasin)
+        "emplacement" -> naturalCmp(x.l.emplacement, y.l.emplacement)
         else -> 0
     }
 
     /** Defaut : date decroissante. Egalite sur tous les criteres : plus recent d'abord. */
-    fun sortedIndexes(lines: List<Line>, criteria: List<Sort>? = null): List<Int> {
+    fun sortedIndexes(cards: List<Card>, criteria: List<Sort>? = null): List<Int> {
         val crit = (if (criteria.isNullOrEmpty()) listOf(Sort("date", -1)) else criteria).filter { it.k in SORT_LABELS }
-        return lines.indices.sortedWith { a, b ->
+        return cards.indices.sortedWith { a, b ->
             for (c in crit) {
-                val r = cmpKey(c.k, lines[a], lines[b])
+                val r = cmpKey(c.k, cards[a], cards[b])
                 if (r != 0) return@sortedWith if (c.d < 0) -r else r
             }
-            val r = lines[b].time.compareTo(lines[a].time)
+            val r = cards[b].l.modified.compareTo(cards[a].l.modified)
             if (r != 0) r else b.compareTo(a)
         }
     }
 
     // ---- Noms de fichiers, dates, resumes ----
-    fun exportFileName(d: Date, ext: String): String = "scancounter_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.ROOT).format(d) + "." + ext
+    fun exportFileName(d: Date, ext: String, prefix: String = "scancounter"): String =
+        prefix + "_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.ROOT).format(d) + "." + ext
     fun nowIso(): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(Date())
     fun exportSubject(name: String): String = "Scancounter " + name.replace(Regex("^scancounter_", RegexOption.IGNORE_CASE), "").replace(Regex("\\.[A-Za-z0-9]+$"), "")
 
@@ -308,27 +271,24 @@ object Logic {
         return s
     }
 
+    /** jj/mm/aaaa seulement. */
+    fun formatDate(sIn: String?): String = formatDateTime(sIn).take(10)
+
     fun fmtFull(iso: String): String {
         val f = formatDateTime(iso)
         return if (f.length == 16) f.substring(0, 10) + " à " + f.substring(11) else f
     }
 
-    /** Taille (sp) du code pour qu'il tienne sur une ligne meme tres long. */
-    fun codeFontSp(code: String): Float {
-        val n = code.length
-        return if (n <= 10) 18f else if (n <= 13) 16f else if (n <= 16) 14f else if (n <= 20) 12.5f else 11f
-    }
-
-    private fun plural(n: Int, one: String, many: String) = "$n ${if (n > 1) many else one}"
+    fun plural(n: Int, one: String, many: String) = "$n ${if (n > 1) many else one}"
 
     fun importSummary(c: MergeCounts, skipped: Int, infoMode: String, replace: Boolean): String {
-        if (replace) { val n = c.created + c.updated; return "Liste remplacée : ${plural(n, "ligne importée", "lignes importées")}." }
+        if (replace) { val n = c.created + c.updated; return "Stock remplacé : ${plural(n, "ligne importée", "lignes importées")}." }
         val out = mutableListOf(
             "Ajoutés (nouveaux) : ${c.created}",
-            "Mis à jour (quantité remplacée) : ${c.updated}",
+            "Quantités modifiées : ${c.updated}",
             "Conservés (quantité gardée) : ${c.kept}",
             "Ignorés (lignes invalides) : $skipped",
-            (if (infoMode == "replace") "Articles dont les infos sont remplacées : " else "Articles dont les infos sont complétées : ") + c.infoChanged
+            (if (infoMode == "replace") "Produits dont les infos sont remplacées : " else "Produits dont les infos sont complétées : ") + c.infoChanged
         )
         if (infoMode == "replace") out.add("Champs effacés : ${c.cleared}")
         return out.joinToString("\n")
